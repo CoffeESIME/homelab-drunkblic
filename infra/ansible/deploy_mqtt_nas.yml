@@ -1,0 +1,55 @@
+---
+# deploy_mqtt_nas.yml
+- name: Desplegar Servidor MQTT (Mosquitto) en el NAS
+  hosts: servidores_core
+  become: yes
+  vars_prompt:
+    - name: sudo_password
+      prompt: "Introduce la contraseña de sudo para el NAS"
+      private: yes
+
+  vars:
+    ruta_docker_nvme: "/volume2/docker_data/mosquitto"
+
+  tasks:
+    - name: Crear estructura de carpetas en el M.2 (Volumen 2)
+      ansible.builtin.file:
+        path: "{{ ruta_docker_nvme }}/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - config
+        - data
+        - log
+
+    - name: Crear archivo de configuración básico de Mosquitto
+      ansible.builtin.copy:
+        dest: "{{ ruta_docker_nvme }}/config/mosquitto.conf"
+        content: |
+          listener 1883
+          allow_anonymous true
+          # Más adelante, con Ansible añadiremos TLS y contraseñas aquí
+        mode: '0644'
+
+    - name: Crear el docker-compose.yml para MQTT directamente en el NAS
+      ansible.builtin.copy:
+        dest: "{{ ruta_docker_nvme }}/docker-compose.yml"
+        content: |
+          version: '3.8'
+          services:
+            mosquitto:
+              image: eclipse-mosquitto:2
+              container_name: scada_mosquitto_core
+              ports:
+                - "1883:1883"
+              volumes:
+                - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+                - ./data:/mosquitto/data
+                - ./log:/mosquitto/log
+              restart: always
+        mode: '0644'
+
+    - name: Levantar contenedor MQTT
+      community.docker.docker_compose_v2:
+        project_src: "{{ ruta_docker_nvme }}"
+        state: present

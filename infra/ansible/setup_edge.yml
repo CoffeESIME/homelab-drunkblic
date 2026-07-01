@@ -1,0 +1,77 @@
+---
+# setup_edge.yml
+- name: Configurar Nodos Edge para Telemetría (Pi Zero W)
+  hosts: edge_nodes
+  become: yes # Ejecutar tareas con sudo (privilegios de root)
+  gather_facts: yes # Recolectar info del sistema antes de empezar
+
+  # Definimos una variable para que nos pregunte la contraseña de sudo al inicio (Alternativa temporal a Ansible Vault)
+  vars_prompt:
+    - name: sudo_password
+      prompt: "Introduce la contraseña de sudo para los nodos"
+      private: yes
+
+  tasks:
+    # ---------------------------------------------------------
+    # SECCIÓN 1: PROTECCIÓN DE MEMORIA (LOG2RAM)
+    # ---------------------------------------------------------
+    - name: Instalar dependencias necesarias
+      ansible.builtin.apt:
+        name: rsync
+        state: present
+        update_cache: yes
+
+    - name: Descargar el código fuente de log2ram
+      ansible.builtin.unarchive:
+        src: [https://github.com/azlux/log2ram/archive/master.tar.gz](https://github.com/azlux/log2ram/archive/master.tar.gz)
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Dar permisos de ejecución al instalador de log2ram
+      ansible.builtin.file:
+        path: /tmp/log2ram-master/install.sh
+        mode: '0755'
+
+    - name: Instalar log2ram
+      ansible.builtin.command: /tmp/log2ram-master/install.sh
+      args:
+        creates: /usr/local/bin/log2ram # Si existe, se salta este paso (Idempotencia)
+      notify: Reiniciar Nodo # Si se instala, llamamos al 'handler' para reiniciar
+
+    # ---------------------------------------------------------
+    # SECCIÓN 2: LECTURA DEL UPS (NUT)
+    # ---------------------------------------------------------
+    - name: Instalar Network UPS Tools (NUT)
+      ansible.builtin.apt:
+        name: nut
+        state: present
+
+    - name: Configurar el modo standalone de NUT
+      ansible.builtin.lineinfile:
+        path: /etc/nut/nut.conf
+        regexp: '^MODE='
+        line: 'MODE=standalone'
+
+    - name: Configurar el driver del UPS CyberPower
+      ansible.builtin.blockinfile:
+        path: /etc/nut/ups.conf
+        block: |
+          [cyberpower]
+              driver = usbhid-ups
+              port = auto
+              desc = "CyberPower CP1500PFCLCDa"
+      notify: Reiniciar servicio NUT
+
+  # ---------------------------------------------------------
+  # HANDLERS (Acciones que solo ocurren si hubo cambios)
+  # ---------------------------------------------------------
+  handlers:
+    - name: Reiniciar Nodo
+      ansible.builtin.reboot:
+        msg: "Reiniciando para aplicar log2ram..."
+
+    - name: Reiniciar servicio NUT
+      ansible.builtin.systemd:
+        name: nut-server
+        state: restarted
+        enabled: yes

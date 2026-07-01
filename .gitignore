@@ -1,0 +1,86 @@
+# ===== Ansible =====
+# Archivos de reintentos
+*.retry
+
+# Vault passwords
+.vault_pass
+.vault_password
+*vault_pass*
+
+# Archivos de variables con secretos
+**/host_vars/*/vault.yml
+**/group_vars/*/vault.yml
+
+# Logs de Ansible
+ansible.log
+
+# Colecciones y roles descargados
+infra/ansible/collections/
+infra/ansible/roles/galaxy/
+
+# Archivos temporales de Ansible
+.ansible/
+ansible.cfg.local
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+.env
+
+# ===== IDE / Editores =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# ===== OS =====
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*.directory
+
+# ===== Secretos y credenciales =====
+*.pem
+*.key
+*.crt
+*.p12
+id_rsa
+id_ed25519
+*.pub
+secrets/
+.env.*
+!.env.example
+
+# ===== Misc =====
+*.bak
+*.tmp
+*.log
+*.cache
+.terraform/
+*.tfstate
+*.tfstate.backup
+infra/ansible/inventario.ini
