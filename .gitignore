@@ -84,3 +84,5 @@ secrets/
 *.tfstate
 *.tfstate.backup
 infra/ansible/inventario.ini
+infra/ansible/certs_scada
+certs_scada/*

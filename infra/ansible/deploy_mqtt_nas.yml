@@ -1,18 +1,26 @@
 ---
 # deploy_mqtt_nas.yml
-- name: Desplegar Servidor MQTT (Mosquitto) en el NAS
+- name: Desplegar Servidor MQTT Seguro (mTLS y WSS)
   hosts: servidores_core
   become: yes
+
   vars_prompt:
     - name: sudo_password
       prompt: "Introduce la contraseña de sudo para el NAS"
       private: yes
+    - name: mqtt_user
+      prompt: "Ingresa el nombre de usuario para el Frontend Web"
+      private: no
+    - name: mqtt_pass
+      prompt: "Ingresa la contraseña para este usuario"
+      private: yes
 
   vars:
     ruta_docker_nvme: "/volume2/docker_data/mosquitto"
+    ruta_certs_local: "./certs_scada"
 
   tasks:
-    - name: Crear estructura de carpetas en el M.2 (Volumen 2)
+    - name: Asegurar que existan las carpetas necesarias en el M.2
       ansible.builtin.file:
         path: "{{ ruta_docker_nvme }}/{{ item }}"
         state: directory
@@ -21,35 +29,82 @@
         - config
         - data
         - log
+        - certs
 
-    - name: Crear archivo de configuración básico de Mosquitto
+    - name: Subir certificados de seguridad desde la PC al NAS
+      ansible.builtin.copy:
+        src: "{{ ruta_certs_local }}/{{ item }}"
+        dest: "{{ ruta_docker_nvme }}/certs/{{ item }}"
+        mode: '0644'
+      loop:
+        - ca.crt
+        - server.crt
+        - server.key
+
+    - name: Configurar enrutamiento y seguridad (mosquitto.conf)
       ansible.builtin.copy:
         dest: "{{ ruta_docker_nvme }}/config/mosquitto.conf"
         content: |
+          # CONFIGURACIÓN GLOBAL
+          allow_anonymous false
+
+          # LISTENER 0: Acceso Local (Backend interno)
           listener 1883
           allow_anonymous true
-          # Más adelante, con Ansible añadiremos TLS y contraseñas aquí
+
+          # LISTENER 1: Frontend React (WSS sobre puerto 8883)
+          listener 8883
+          cafile /mosquitto/certs/ca.crt
+          certfile /mosquitto/certs/server.crt
+          keyfile /mosquitto/certs/server.key
+          password_file /mosquitto/config/passwd
+
+          # LISTENER 2: mTLS Industrial (Edge Acquisition - Raspberry)
+          listener 8884
+          cafile /mosquitto/certs/ca.crt
+          certfile /mosquitto/certs/server.crt
+          keyfile /mosquitto/certs/server.key
+          require_certificate true
+          use_identity_as_username true
         mode: '0644'
 
-    - name: Crear el docker-compose.yml para MQTT directamente en el NAS
+    - name: Crear archivo docker-compose.yml dinámicamente
       ansible.builtin.copy:
         dest: "{{ ruta_docker_nvme }}/docker-compose.yml"
         content: |
-          version: '3.8'
           services:
             mosquitto:
               image: eclipse-mosquitto:2
               container_name: scada_mosquitto_core
               ports:
                 - "1883:1883"
+                - "8883:8883"
+                - "8884:8884"
               volumes:
                 - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+                - ./config/passwd:/mosquitto/config/passwd
+                - ./certs:/mosquitto/certs:ro
                 - ./data:/mosquitto/data
                 - ./log:/mosquitto/log
               restart: always
         mode: '0644'
 
-    - name: Levantar contenedor MQTT
+    - name: Crear archivo passwd vacío (previene que Docker lo monte como directorio)
+      ansible.builtin.file:
+        path: "{{ ruta_docker_nvme }}/config/passwd"
+        state: touch
+        mode: '0644'
+
+    - name: Levantar el contenedor de Mosquitto
       community.docker.docker_compose_v2:
         project_src: "{{ ruta_docker_nvme }}"
         state: present
+
+    - name: Generar credenciales de acceso para el Frontend
+      ansible.builtin.command:
+        cmd: docker exec scada_mosquitto_core mosquitto_passwd -b /mosquitto/config/passwd {{ mqtt_user }} {{ mqtt_pass }}
+
+    - name: Reiniciar Mosquitto para aplicar los certificados y usuarios
+      community.docker.docker_compose_v2:
+        project_src: "{{ ruta_docker_nvme }}"
+        state: restarted
