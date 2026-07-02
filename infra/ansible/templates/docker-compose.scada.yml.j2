@@ -1,0 +1,81 @@
+# ============================================
+# Docker Compose — SCADA Stack (NAS)
+# Generado por Ansible — NO EDITAR MANUALMENTE
+# ============================================
+
+services:
+  # Backend Service (API REST + MQTT Listener + Alarmas)
+  backend:
+    build: {{ scada_repo_dir }}
+    container_name: scada_backend
+    ports:
+      - "{{ backend_port }}:8000"
+    env_file:
+      - {{ scada_backend_dir }}/.env.backend
+    environment:
+      - POSTGRES_HOST=timescaledb
+      - MQTT_BROKER_HOST=mosquitto
+      - MQTT_BROKER_PORT=1883
+    depends_on:
+      timescaledb:
+        condition: service_started
+      mosquitto:
+        condition: service_healthy
+    restart: always
+    networks:
+      - scada_net
+
+  # MQTT Broker (Mosquitto con TLS y mTLS)
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: scada_mosquitto
+    ports:
+      - "127.0.0.1:{{ mqtt_loopback_port }}:1883"
+      - "{{ mqtt_wss_port }}:8883"
+      - "{{ mqtt_mtls_port }}:8884"
+    volumes:
+      - {{ scada_mosquitto_dir }}/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - {{ scada_mosquitto_dir }}/config/passwd:/mosquitto/config/passwd:ro
+      - {{ scada_mosquitto_dir }}/certs:/mosquitto/certs:ro
+      - {{ scada_mosquitto_dir }}/data:/mosquitto/data
+      - {{ scada_mosquitto_dir }}/log:/mosquitto/log
+    restart: always
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "127.0.0.1", "-p", "1883",
+             "-u", "{{ mqtt_health_user }}", "-P", "{{ vault_mqtt_health_pass }}",
+             "-t", "scada/healthcheck", "-m", "ok", "-q", "0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks:
+      - scada_net
+
+  # TimescaleDB (Almacenamiento Centralizado de Series Temporales)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: scada_db
+    environment:
+      - POSTGRES_USER={{ postgres_user }}
+      - POSTGRES_PASSWORD={{ vault_postgres_password }}
+      - POSTGRES_DB={{ postgres_db }}
+    ports:
+      - "127.0.0.1:{{ postgres_port }}:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - {{ scada_timescaledb_dir }}/init:/docker-entrypoint-initdb.d
+    restart: always
+    command: ["postgres", "-c", "log_statement=all"]
+    networks:
+      - scada_net
+
+volumes:
+  timescaledb_data:
+
+networks:
+  scada_net:
+    driver: bridge

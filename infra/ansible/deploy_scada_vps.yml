@@ -1,0 +1,293 @@
+---
+# =============================================================
+# deploy_scada_vps.yml — Despliegue completo del stack SCADA
+# =============================================================
+# Despliega en el NAS Ugreen:
+#   1. Mosquitto MQTT (TLS + mTLS)
+#   2. TimescaleDB (Series Temporales)
+#   3. SCADA Backend (FastAPI + MQTT Listener)
+#
+# USO:
+#   # Primera vez (pide contraseña de vault):
+#   ansible-playbook -i inventario.ini deploy_scada_vps.yml --ask-vault-pass
+#
+#   # Con archivo de contraseña de vault:
+#   ansible-playbook -i inventario.ini deploy_scada_vps.yml --vault-password-file ~/.vault_pass
+#
+#   # Dry-run (solo muestra cambios sin aplicar):
+#   ansible-playbook -i inventario.ini deploy_scada_vps.yml --ask-vault-pass --check --diff
+# =============================================================
+
+- name: Desplegar Stack SCADA Completo (Backend + TimescaleDB + MQTT)
+  hosts: servidores_core
+  become: yes
+
+  vars:
+    ansible_become_pass: "{{ vault_sudo_password }}"
+
+  vars_prompt:
+    - name: mqtt_frontend_user
+      prompt: "Usuario MQTT para el Frontend Web"
+      private: no
+      default: "scada_web"
+    - name: mqtt_frontend_pass
+      prompt: "Contraseña MQTT para el Frontend Web"
+      private: yes
+
+  # ═══════════════════════════════════════════════════════════════
+  # FASE 1: Pre-flight Checks
+  # ═══════════════════════════════════════════════════════════════
+  pre_tasks:
+    - name: "[PREFLIGHT] Verificar que Docker está instalado"
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+      failed_when: docker_version.rc != 0
+
+    - name: "[PREFLIGHT] Verificar que Docker Compose v2 está disponible"
+      ansible.builtin.command: docker compose version
+      register: compose_version
+      changed_when: false
+      failed_when: compose_version.rc != 0
+
+    - name: "[PREFLIGHT] Mostrar versiones detectadas"
+      ansible.builtin.debug:
+        msg: |
+          Docker:  {{ docker_version.stdout }}
+          Compose: {{ compose_version.stdout }}
+
+    - name: "[PREFLIGHT] Verificar espacio en disco (mínimo 5 GB libres)"
+      ansible.builtin.shell: df -BG {{ scada_base_dir | dirname }} | tail -1 | awk '{print $4}' | tr -d 'G'
+      register: disk_free
+      changed_when: false
+
+    - name: "[PREFLIGHT] Fallar si no hay suficiente espacio"
+      ansible.builtin.fail:
+        msg: "Solo hay {{ disk_free.stdout }}GB libres. Se requieren al menos 5GB."
+      when: disk_free.stdout | int < 5
+
+    - name: "[PREFLIGHT] Verificar que Git está instalado"
+      ansible.builtin.command: git --version
+      register: git_version
+      changed_when: false
+      failed_when: git_version.rc != 0
+
+  # ═══════════════════════════════════════════════════════════════
+  # TAREAS PRINCIPALES
+  # ═══════════════════════════════════════════════════════════════
+  tasks:
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 2: Crear Estructura de Directorios
+    # ─────────────────────────────────────────────────────────────
+    - name: "[DIRS] Crear árbol de directorios del proyecto SCADA"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ scada_base_dir }}"
+        - "{{ scada_mosquitto_dir }}/config"
+        - "{{ scada_mosquitto_dir }}/certs"
+        - "{{ scada_mosquitto_dir }}/data"
+        - "{{ scada_mosquitto_dir }}/log"
+        - "{{ scada_timescaledb_dir }}/init"
+        - "{{ scada_backend_dir }}"
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 3: Subir Certificados PKI
+    # ─────────────────────────────────────────────────────────────
+    - name: "[PKI] Subir certificados de seguridad (CA + Server)"
+      ansible.builtin.copy:
+        src: "{{ pki_local_certs_dir }}/{{ item.src }}"
+        dest: "{{ scada_mosquitto_dir }}/certs/{{ item.dest }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { src: "ca.crt",     dest: "ca.crt",     mode: "0644" }
+        - { src: "server.crt", dest: "server.crt", mode: "0644" }
+        - { src: "server.key", dest: "server.key", mode: "0600" }
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 4: Configuración de Mosquitto
+    # ─────────────────────────────────────────────────────────────
+    - name: "[MQTT] Renderizar mosquitto.conf desde template"
+      ansible.builtin.template:
+        src: templates/mosquitto.conf.j2
+        dest: "{{ scada_mosquitto_dir }}/config/mosquitto.conf"
+        mode: '0644'
+      notify: Reiniciar stack SCADA
+
+    - name: "[MQTT] Crear archivo passwd vacío si no existe"
+      ansible.builtin.file:
+        path: "{{ scada_mosquitto_dir }}/config/passwd"
+        state: touch
+        mode: '0644'
+        modification_time: preserve
+        access_time: preserve
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 5: Clonar/Actualizar Repositorio del Backend
+    # ─────────────────────────────────────────────────────────────
+    - name: "[GIT] Clonar o actualizar repositorio scada-backend"
+      ansible.builtin.git:
+        repo: "{{ scada_repo_url }}"
+        dest: "{{ scada_repo_dir }}"
+        version: "{{ scada_repo_branch }}"
+        force: yes
+      register: git_result
+
+    - name: "[GIT] Mostrar estado del repositorio"
+      ansible.builtin.debug:
+        msg: "Repo en commit: {{ git_result.after | default('N/A') }}"
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 6: Generar Archivos de Entorno (.env)
+    # ─────────────────────────────────────────────────────────────
+    - name: "[ENV] Renderizar .env.backend (secretos del backend)"
+      ansible.builtin.template:
+        src: templates/env.backend.j2
+        dest: "{{ scada_backend_dir }}/.env.backend"
+        mode: '0600'
+      notify: Reiniciar stack SCADA
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 7: Script de Inicialización de TimescaleDB
+    # ─────────────────────────────────────────────────────────────
+    - name: "[TSDB] Copiar script de inicialización de TimescaleDB"
+      ansible.builtin.copy:
+        content: |
+          -- =============================================================
+          -- TimescaleDB: Inicialización de Hypertable para métricas SCADA
+          -- Generado por Ansible — NO EDITAR MANUALMENTE
+          -- =============================================================
+          CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+
+          CREATE TABLE IF NOT EXISTS metrics (
+              time TIMESTAMPTZ NOT NULL,
+              tag_id INT NOT NULL,
+              value DOUBLE PRECISION NOT NULL,
+              quality INT NOT NULL DEFAULT 192,
+              PRIMARY KEY (time, tag_id)
+          );
+
+          SELECT create_hypertable('metrics', 'time',
+                 chunk_time_interval => INTERVAL '1 day',
+                 if_not_exists => true);
+        dest: "{{ scada_timescaledb_dir }}/init/01_timescaledb_init.sql"
+        mode: '0644'
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 8: Renderizar Docker Compose y Desplegar
+    # ─────────────────────────────────────────────────────────────
+    - name: "[DEPLOY] Renderizar docker-compose.yml desde template"
+      ansible.builtin.template:
+        src: templates/docker-compose.scada.yml.j2
+        dest: "{{ scada_base_dir }}/docker-compose.yml"
+        mode: '0644'
+
+    - name: "[DEPLOY] Construir y levantar el stack SCADA"
+      community.docker.docker_compose_v2:
+        project_src: "{{ scada_base_dir }}"
+        build: always
+        state: present
+        remove_orphans: true
+      register: compose_result
+
+    - name: "[DEPLOY] Mostrar estado de los contenedores"
+      ansible.builtin.debug:
+        msg: "Docker Compose terminó con: {{ compose_result.actions | default('sin acciones') }}"
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 9: Crear Usuario MQTT para el Frontend
+    # ─────────────────────────────────────────────────────────────
+    - name: "[MQTT] Esperar a que Mosquitto esté saludable"
+      ansible.builtin.command:
+        cmd: docker inspect --format='{{ '{{' }}.State.Health.Status{{ '}}' }}' scada_mosquitto
+      register: mosquitto_health
+      retries: 10
+      delay: 5
+      until: mosquitto_health.stdout == "healthy"
+      changed_when: false
+
+    - name: "[MQTT] Crear/actualizar usuario healthcheck"
+      ansible.builtin.command:
+        cmd: >
+          docker exec scada_mosquitto
+          mosquitto_passwd -b /mosquitto/config/passwd
+          {{ mqtt_health_user }} {{ vault_mqtt_health_pass }}
+
+    - name: "[MQTT] Crear/actualizar usuario del Frontend"
+      ansible.builtin.command:
+        cmd: >
+          docker exec scada_mosquitto
+          mosquitto_passwd -b /mosquitto/config/passwd
+          {{ mqtt_frontend_user }} {{ mqtt_frontend_pass }}
+
+    - name: "[MQTT] Reiniciar Mosquitto para aplicar usuarios"
+      ansible.builtin.command:
+        cmd: docker restart scada_mosquitto
+
+    - name: "[MQTT] Esperar a que Mosquitto vuelva a estar saludable"
+      ansible.builtin.command:
+        cmd: docker inspect --format='{{ '{{' }}.State.Health.Status{{ '}}' }}' scada_mosquitto
+      register: mosquitto_health_post
+      retries: 10
+      delay: 5
+      until: mosquitto_health_post.stdout == "healthy"
+      changed_when: false
+
+    # ─────────────────────────────────────────────────────────────
+    # FASE 10: Healthcheck Final
+    # ─────────────────────────────────────────────────────────────
+    - name: "[HEALTH] Verificar que el Backend responde"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ backend_port }}/health"
+        return_content: yes
+        status_code: 200
+      register: backend_health
+      retries: 12
+      delay: 10
+      until: backend_health.status == 200
+
+    - name: "[HEALTH] Verificar que TimescaleDB acepta conexiones"
+      ansible.builtin.command:
+        cmd: >
+          docker exec scada_db
+          pg_isready -U {{ postgres_user }} -d {{ postgres_db }}
+      register: db_health
+      retries: 10
+      delay: 5
+      until: db_health.rc == 0
+      changed_when: false
+
+    # ─────────────────────────────────────────────────────────────
+    # RESUMEN
+    # ─────────────────────────────────────────────────────────────
+    - name: "[DONE] Resumen del despliegue exitoso"
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════════
+            ✅ SCADA STACK DESPLEGADO EXITOSAMENTE
+          ═══════════════════════════════════════════════════════════════
+
+            Backend API:    http://{{ ansible_host }}:{{ backend_port }}/
+            Health Check:   http://{{ ansible_host }}:{{ backend_port }}/health
+            Backend Docs:   http://{{ ansible_host }}:{{ backend_port }}/docs
+
+            MQTT (interno): mqtt://127.0.0.1:{{ mqtt_loopback_port }}
+            MQTT (WSS):     wss://{{ ansible_host }}:{{ mqtt_wss_port }}
+            MQTT (mTLS):    mqtts://{{ ansible_host }}:{{ mqtt_mtls_port }}
+
+            TimescaleDB:    postgresql://{{ postgres_user }}@127.0.0.1:{{ postgres_port }}/{{ postgres_db }}
+
+            Git Commit:     {{ git_result.after | default('N/A') }}
+          ═══════════════════════════════════════════════════════════════
+
+  # ═══════════════════════════════════════════════════════════════
+  # HANDLERS
+  # ═══════════════════════════════════════════════════════════════
+  handlers:
+    - name: Reiniciar stack SCADA
+      community.docker.docker_compose_v2:
+        project_src: "{{ scada_base_dir }}"
+        state: restarted

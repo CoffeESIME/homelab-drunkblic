@@ -1,0 +1,42 @@
+# ============================================
+# Variables del grupo servidores_core (SCADA)
+# Valores no sensibles — seguros para Git.
+# Los secretos van en vault.yml (cifrado).
+# ============================================
+
+# --- Rutas en el servidor NAS ---
+scada_base_dir: "/volume2/docker_data/scada"
+scada_mosquitto_dir: "{{ scada_base_dir }}/mosquitto"
+scada_timescaledb_dir: "{{ scada_base_dir }}/timescaledb"
+scada_backend_dir: "{{ scada_base_dir }}/backend"
+scada_repo_dir: "{{ scada_base_dir }}/repo"
+
+# --- Repositorio Git ---
+scada_repo_url: "https://github.com/CoffeESIME/react-scada-backend.git"
+scada_repo_branch: "main"
+
+# --- Puertos expuestos ---
+backend_port: 8888
+mqtt_loopback_port: 1883
+mqtt_wss_port: 8883
+mqtt_mtls_port: 8884
+postgres_port: 5432
+
+# --- PostgreSQL / TimescaleDB ---
+postgres_user: "scada_admin"
+postgres_db: "scada_production"
+
+# --- MQTT ---
+mqtt_domain: "192.168.50.2"
+mqtt_health_user: "healthcheck"
+mqtt_client_id: "scada-backend-nas"
+
+# --- Backend ---
+backend_deployment_env: "vps_local"
+backend_api_prefix: "/api/v1"
+backend_cors_origins: '["http://localhost:3000","http://192.168.50.2:3000"]'
+jwt_algorithm: "HS256"
+jwt_expire_minutes: 60
+
+# --- Certificados PKI (rutas locales en la máquina de control) ---
+pki_local_certs_dir: "./certs_scada"
