@@ -66,11 +66,17 @@
         msg: "Solo hay {{ disk_free.stdout }}GB libres. Se requieren al menos 5GB."
       when: disk_free.stdout | int < 5
 
-    - name: "[PREFLIGHT] Verificar que Git está instalado"
-      ansible.builtin.command: git --version
-      register: git_version
-      changed_when: false
-      failed_when: git_version.rc != 0
+    - name: "[PREFLIGHT] Verificar que el código fuente local existe"
+      ansible.builtin.stat:
+        path: "{{ scada_repo_local_dir }}"
+      delegate_to: localhost
+      become: no
+      register: local_repo
+
+    - name: "[PREFLIGHT] Fallar si no se encuentra el código fuente"
+      ansible.builtin.fail:
+        msg: "No se encontró el directorio {{ scada_repo_local_dir }}. Verifica la ruta en vars.yml."
+      when: not local_repo.stat.exists
 
   # ═══════════════════════════════════════════════════════════════
   # TAREAS PRINCIPALES
@@ -126,19 +132,61 @@
         access_time: preserve
 
     # ─────────────────────────────────────────────────────────────
-    # FASE 5: Clonar/Actualizar Repositorio del Backend
+    # FASE 5: Empaquetado Limpio y Transferencia (Push → Tarball)
     # ─────────────────────────────────────────────────────────────
-    - name: "[GIT] Clonar o actualizar repositorio scada-backend"
-      ansible.builtin.git:
-        repo: "{{ scada_repo_url }}"
-        dest: "{{ scada_repo_dir }}"
-        version: "{{ scada_repo_branch }}"
-        force: yes
-      register: git_result
+    - name: "[PUSH] Empaquetar código fuente (excluyendo basura de desarrollo)"
+      community.general.archive:
+        path: "{{ scada_repo_local_dir }}/"
+        dest: "{{ scada_tarball_tmp }}"
+        format: gz
+        force_archive: true
+        exclusion_patterns:
+          - ".git"
+          - ".git/*"
+          - ".github"
+          - ".github/*"
+          - "__pycache__"
+          - "__pycache__/*"
+          - "*.pyc"
+          - ".pytest_cache"
+          - ".pytest_cache/*"
+          - ".env"
+          - ".env.*"
+          - ".venv"
+          - ".venv/*"
+          - "venv"
+          - "venv/*"
+          - "env"
+          - "env/*"
+          - ".vscode"
+          - ".vscode/*"
+          - ".idea"
+          - ".idea/*"
+          - ".DS_Store"
+          - "*.egg-info"
+          - "node_modules"
+          - "node_modules/*"
+      delegate_to: localhost
+      become: no
 
-    - name: "[GIT] Mostrar estado del repositorio"
+    - name: "[PUSH] Transferir y extraer tarball limpio en el NAS"
+      ansible.builtin.unarchive:
+        src: "{{ scada_tarball_tmp }}"
+        dest: "{{ scada_repo_dir }}/"
+        mode: '0755'
+        extra_opts:
+          - "--strip-components=1"
+
+    - name: "[PUSH] Limpiar tarball temporal de la máquina local"
+      ansible.builtin.file:
+        path: "{{ scada_tarball_tmp }}"
+        state: absent
+      delegate_to: localhost
+      become: no
+
+    - name: "[PUSH] Mostrar resultado de la transferencia"
       ansible.builtin.debug:
-        msg: "Repo en commit: {{ git_result.after | default('N/A') }}"
+        msg: "Código fuente empaquetado y transferido limpiamente a {{ scada_repo_dir }}"
 
     # ─────────────────────────────────────────────────────────────
     # FASE 6: Generar Archivos de Entorno (.env)
@@ -280,7 +328,7 @@
 
             TimescaleDB:    postgresql://{{ postgres_user }}@127.0.0.1:{{ postgres_port }}/{{ postgres_db }}
 
-            Git Commit:     {{ git_result.after | default('N/A') }}
+            Modo deploy:    Push (copia directa desde controller)
           ═══════════════════════════════════════════════════════════════
 
   # ═══════════════════════════════════════════════════════════════

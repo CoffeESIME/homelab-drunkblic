@@ -11,9 +11,9 @@ scada_timescaledb_dir: "{{ scada_base_dir }}/timescaledb"
 scada_backend_dir: "{{ scada_base_dir }}/backend"
 scada_repo_dir: "{{ scada_base_dir }}/repo"
 
-# --- Repositorio Git ---
-scada_repo_url: "https://github.com/CoffeESIME/react-scada-backend.git"
-scada_repo_branch: "main"
+# --- Código fuente (Push desde máquina local) ---
+scada_repo_local_dir: "/mnt/c/Users/USER/Desktop/Proyectos/scada/scada-backend"
+scada_tarball_tmp: "/tmp/scada-backend.tar.gz"
 
 # --- Puertos expuestos ---
 backend_port: 8888
