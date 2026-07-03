@@ -1,0 +1,33 @@
+---
+# cleanup_mqtt_legacy.yml — Eliminar infraestructura de prueba Mosquitto
+# USO:
+#   ansible-playbook -i inventario.ini cleanup_mqtt_legacy.yml --ask-vault-pass
+# =============================================================
+
+- name: Limpiar infraestructura antigua de Mosquitto (pruebas)
+  hosts: servidores_core
+  become: yes
+  vars:
+    ansible_become_pass: "{{ vault_sudo_password }}"
+    legacy_mqtt_dir: "/volume2/docker_data/mosquitto"
+
+  tasks:
+    - name: "[CLEANUP] Detener y eliminar contenedor + red (docker compose down)"
+      community.docker.docker_compose_v2:
+        project_src: "{{ legacy_mqtt_dir }}"
+        state: absent
+        remove_volumes: true
+      ignore_errors: yes
+
+    - name: "[CLEANUP] Borrar la carpeta vieja y todos sus archivos"
+      ansible.builtin.file:
+        path: "{{ legacy_mqtt_dir }}"
+        state: absent
+
+    - name: "[DONE] Confirmación de limpieza"
+      ansible.builtin.debug:
+        msg: |
+          ✅ Infraestructura legacy eliminada:
+            - Contenedor: scada_mosquitto_core (down + removed)
+            - Directorio: {{ legacy_mqtt_dir }} (borrado)
+          El stack SCADA (deploy_scada_vps.yml) usa su propia instancia de Mosquitto.

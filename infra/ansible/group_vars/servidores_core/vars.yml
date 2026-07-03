@@ -20,7 +20,7 @@ backend_port: 8888
 mqtt_loopback_port: 1883
 mqtt_wss_port: 8883
 mqtt_mtls_port: 8884
-postgres_port: 5432
+postgres_port: 5437
 
 # --- PostgreSQL / TimescaleDB ---
 postgres_user: "scada_admin"
@@ -36,7 +36,7 @@ backend_deployment_env: "vps_local"
 backend_api_prefix: "/api/v1"
 backend_cors_origins: '["http://localhost:3000","http://192.168.50.2:3000"]'
 jwt_algorithm: "HS256"
-jwt_expire_minutes: 60
+jwt_expire_minutes: 600
 
 # --- Certificados PKI (rutas locales en la máquina de control) ---
 pki_local_certs_dir: "./certs_scada"

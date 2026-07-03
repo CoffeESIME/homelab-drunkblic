@@ -9,7 +9,7 @@ services:
     build: {{ scada_repo_dir }}
     container_name: scada_backend
     ports:
-      - "{{ backend_port }}:8000"
+      - "{{ backend_port }}:8888"
     env_file:
       - {{ scada_backend_dir }}/.env.backend
     environment:

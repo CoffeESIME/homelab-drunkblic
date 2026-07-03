@@ -86,7 +86,7 @@
     # ─────────────────────────────────────────────────────────────
     # FASE 2: Crear Estructura de Directorios
     # ─────────────────────────────────────────────────────────────
-    - name: "[DIRS] Crear árbol de directorios del proyecto SCADA"
+    - name: "[DIRS] Crear árbol de directorios general"
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -95,10 +95,19 @@
         - "{{ scada_base_dir }}"
         - "{{ scada_mosquitto_dir }}/config"
         - "{{ scada_mosquitto_dir }}/certs"
-        - "{{ scada_mosquitto_dir }}/data"
-        - "{{ scada_mosquitto_dir }}/log"
         - "{{ scada_timescaledb_dir }}/init"
         - "{{ scada_backend_dir }}"
+
+    - name: "[DIRS] Asignar permisos a carpetas de Mosquitto (UID 1883)"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "1883"
+        group: "1883"
+        mode: '0755'
+      loop:
+        - "{{ scada_mosquitto_dir }}/data"
+        - "{{ scada_mosquitto_dir }}/log"
 
     # ─────────────────────────────────────────────────────────────
     # FASE 3: Subir Certificados PKI
@@ -174,8 +183,6 @@
         src: "{{ scada_tarball_tmp }}"
         dest: "{{ scada_repo_dir }}/"
         mode: '0755'
-        extra_opts:
-          - "--strip-components=1"
 
     - name: "[PUSH] Limpiar tarball temporal de la máquina local"
       ansible.builtin.file:
@@ -225,6 +232,23 @@
         mode: '0644'
 
     # ─────────────────────────────────────────────────────────────
+    # FASE 7.5: Pre-generar usuarios MQTT (Solución a la Paradoja)
+    # ─────────────────────────────────────────────────────────────
+    - name: "[MQTT] Generar archivo passwd inicial con contenedor efímero"
+      ansible.builtin.command:
+        cmd: >
+          docker run --rm
+          -v {{ scada_mosquitto_dir }}/config:/mosquitto/config
+          eclipse-mosquitto:2
+          sh -c "mosquitto_passwd -b /mosquitto/config/passwd {{ mqtt_health_user | default(vault_mqtt_health_user) }} {{ vault_mqtt_health_pass }} && mosquitto_passwd -b /mosquitto/config/passwd {{ vault_mqtt_frontend_user | default(mqtt_frontend_user) }} {{ vault_mqtt_frontend_pass | default(mqtt_frontend_pass) }}"
+    - name: "[MQTT] Devolver permisos del archivo passwd al usuario Mosquitto (1883)"
+      ansible.builtin.file:
+        path: "{{ scada_mosquitto_dir }}/config/passwd"
+        owner: "1883"
+        group: "1883"
+        mode: '0644'
+
+    # ─────────────────────────────────────────────────────────────
     # FASE 8: Renderizar Docker Compose y Desplegar
     # ─────────────────────────────────────────────────────────────
     - name: "[DEPLOY] Renderizar docker-compose.yml desde template"
@@ -246,43 +270,43 @@
         msg: "Docker Compose terminó con: {{ compose_result.actions | default('sin acciones') }}"
 
     # ─────────────────────────────────────────────────────────────
-    # FASE 9: Crear Usuario MQTT para el Frontend
-    # ─────────────────────────────────────────────────────────────
-    - name: "[MQTT] Esperar a que Mosquitto esté saludable"
-      ansible.builtin.command:
-        cmd: docker inspect --format='{{ '{{' }}.State.Health.Status{{ '}}' }}' scada_mosquitto
-      register: mosquitto_health
-      retries: 10
-      delay: 5
-      until: mosquitto_health.stdout == "healthy"
-      changed_when: false
+    # # FASE 9: Crear Usuario MQTT para el Frontend
+    # # ─────────────────────────────────────────────────────────────
+    # - name: "[MQTT] Esperar a que Mosquitto esté saludable"
+    #   ansible.builtin.command:
+    #     cmd: docker inspect --format='{{ '{{' }}.State.Health.Status{{ '}}' }}' scada_mosquitto
+    #   register: mosquitto_health
+    #   retries: 10
+    #   delay: 5
+    #   until: mosquitto_health.stdout == "healthy"
+    #   changed_when: false
 
-    - name: "[MQTT] Crear/actualizar usuario healthcheck"
-      ansible.builtin.command:
-        cmd: >
-          docker exec scada_mosquitto
-          mosquitto_passwd -b /mosquitto/config/passwd
-          {{ mqtt_health_user }} {{ vault_mqtt_health_pass }}
+    # - name: "[MQTT] Crear/actualizar usuario healthcheck"
+    #   ansible.builtin.command:
+    #     cmd: >
+    #       docker exec scada_mosquitto
+    #       mosquitto_passwd -b /mosquitto/config/passwd
+    #       {{ mqtt_health_user }} {{ vault_mqtt_health_pass }}
 
-    - name: "[MQTT] Crear/actualizar usuario del Frontend"
-      ansible.builtin.command:
-        cmd: >
-          docker exec scada_mosquitto
-          mosquitto_passwd -b /mosquitto/config/passwd
-          {{ mqtt_frontend_user }} {{ mqtt_frontend_pass }}
+    # - name: "[MQTT] Crear/actualizar usuario del Frontend"
+    #   ansible.builtin.command:
+    #     cmd: >
+    #       docker exec scada_mosquitto
+    #       mosquitto_passwd -b /mosquitto/config/passwd
+    #       {{ mqtt_frontend_user }} {{ mqtt_frontend_pass }}
 
-    - name: "[MQTT] Reiniciar Mosquitto para aplicar usuarios"
-      ansible.builtin.command:
-        cmd: docker restart scada_mosquitto
+    # - name: "[MQTT] Reiniciar Mosquitto para aplicar usuarios"
+    #   ansible.builtin.command:
+    #     cmd: docker restart scada_mosquitto
 
-    - name: "[MQTT] Esperar a que Mosquitto vuelva a estar saludable"
-      ansible.builtin.command:
-        cmd: docker inspect --format='{{ '{{' }}.State.Health.Status{{ '}}' }}' scada_mosquitto
-      register: mosquitto_health_post
-      retries: 10
-      delay: 5
-      until: mosquitto_health_post.stdout == "healthy"
-      changed_when: false
+    # - name: "[MQTT] Esperar a que Mosquitto vuelva a estar saludable"
+    #   ansible.builtin.command:
+    #     cmd: docker inspect --format='{{ '{{' }}.State.Health.Status{{ '}}' }}' scada_mosquitto
+    #   register: mosquitto_health_post
+    #   retries: 10
+    #   delay: 5
+    #   until: mosquitto_health_post.stdout == "healthy"
+    #   changed_when: false
 
     # ─────────────────────────────────────────────────────────────
     # FASE 10: Healthcheck Final
