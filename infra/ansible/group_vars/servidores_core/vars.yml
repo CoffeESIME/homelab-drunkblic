@@ -30,6 +30,8 @@ postgres_db: "scada_production"
 mqtt_domain: "192.168.50.2"
 mqtt_health_user: "healthcheck"
 mqtt_client_id: "scada-backend-nas"
+mqtt_frontend_user: "scada_web"
+mqtt_frontend_pass: "scada_web_default_pass"
 
 # --- Backend ---
 backend_deployment_env: "vps_local"

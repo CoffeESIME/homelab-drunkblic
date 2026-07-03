@@ -7,27 +7,21 @@
 #   Certs:  /mosquitto/certs/
 #   Config: /mosquitto/config/
 #   Data:   /mosquitto/data/
-#   Logs:   /mosquitto/log/
 # =============================================================
 
 # -------------------------------------------------------------
-# Persistencia y Logs
+# Global
 # -------------------------------------------------------------
 persistence true
 persistence_location /mosquitto/data/
-log_dest file /mosquitto/log/mosquitto.log
-log_type error
-log_type warning
-log_type notice
-log_type information
+log_dest stdout
 connection_messages true
 
 # =============================================================
-# LISTENER 1 — MQTT TCP Loopback (Puerto 1883)
+# LISTENER 1 — MQTT TCP (Puerto 1883)
 # Propósito: Comunicación interna contenedor-a-contenedor.
 #            El backend FastAPI se conecta por aquí.
-# Seguridad: Restringido a 0.0.0.0 dentro de la red Docker
-#            (el puerto NO se expone al host, solo al stack).
+# Seguridad: Restringido a la red Docker interna.
 #            Autenticación por usuario/contraseña.
 # =============================================================
 listener 1883
@@ -36,22 +30,15 @@ allow_anonymous false
 password_file /mosquitto/config/passwd
 
 # =============================================================
-# LISTENER 2 — MQTTS sobre WebSockets (Puerto 8883)
+# LISTENER 2 — WebSockets en texto plano (Puerto 8883)
 # Propósito: Conexiones del Frontend React/Next.js (HMI).
-#            El navegador usa WSS (WebSocket Secure) para
+#            El navegador usa WS (WebSocket) para
 #            suscribirse a los tópicos en tiempo real.
-# Seguridad: TLS con certificado de CA propia.
-#            Autenticación por usuario/contraseña.
+# Seguridad: Autenticación por usuario/contraseña.
+#            Sin TLS (red local confiable).
 # =============================================================
 listener 8883
 protocol websockets
-
-# --- Certificados CA Propia (para red local sin Let's Encrypt) ---
-cafile   /mosquitto/certs/ca.crt
-certfile /mosquitto/certs/server.crt
-keyfile  /mosquitto/certs/server.key
-
-tls_version tlsv1.2
 allow_anonymous false
 password_file /mosquitto/config/passwd
 
@@ -65,12 +52,9 @@ password_file /mosquitto/config/passwd
 # =============================================================
 listener 8884
 protocol mqtt
-
-# --- Certificados CA Propia (SCADA Root CA) ---
 cafile   /mosquitto/certs/ca.crt
 certfile /mosquitto/certs/server.crt
 keyfile  /mosquitto/certs/server.key
-
 tls_version tlsv1.2
 require_certificate true
 use_identity_as_username true

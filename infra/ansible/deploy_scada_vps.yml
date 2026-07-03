@@ -25,14 +25,7 @@
   vars:
     ansible_become_pass: "{{ vault_sudo_password }}"
 
-  vars_prompt:
-    - name: mqtt_frontend_user
-      prompt: "Usuario MQTT para el Frontend Web"
-      private: no
-      default: "scada_web"
-    - name: mqtt_frontend_pass
-      prompt: "Contraseña MQTT para el Frontend Web"
-      private: yes
+
 
   # ═══════════════════════════════════════════════════════════════
   # FASE 1: Pre-flight Checks
@@ -82,9 +75,8 @@
   # TAREAS PRINCIPALES
   # ═══════════════════════════════════════════════════════════════
   tasks:
-
     # ─────────────────────────────────────────────────────────────
-    # FASE 2: Crear Estructura de Directorios
+    # FASE 2: Crear Estructura de Directorios y Permisos
     # ─────────────────────────────────────────────────────────────
     - name: "[DIRS] Crear árbol de directorios general"
       ansible.builtin.file:
@@ -93,12 +85,19 @@
         mode: '0755'
       loop:
         - "{{ scada_base_dir }}"
-        - "{{ scada_mosquitto_dir }}/config"
-        - "{{ scada_mosquitto_dir }}/certs"
         - "{{ scada_timescaledb_dir }}/init"
         - "{{ scada_backend_dir }}"
 
-    - name: "[DIRS] Asignar permisos a carpetas de Mosquitto (UID 1883)"
+    - name: "[DIRS] Crear directorios de Mosquitto con ownership UID 1883"
+      ansible.builtin.file:
+        path: "{{ scada_mosquitto_dir }}"
+        state: directory
+        owner: "1883"
+        group: "1883"
+        mode: '0755'
+        recurse: yes
+
+    - name: "[DIRS] Crear subdirectorios específicos de Mosquitto"
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -106,8 +105,20 @@
         group: "1883"
         mode: '0755'
       loop:
+        - "{{ scada_mosquitto_dir }}/config"
+        - "{{ scada_mosquitto_dir }}/certs"
         - "{{ scada_mosquitto_dir }}/data"
         - "{{ scada_mosquitto_dir }}/log"
+
+    - name: "[DIRS] Crear archivo passwd con permisos seguros"
+      ansible.builtin.file:
+        path: "{{ scada_mosquitto_dir }}/config/passwd"
+        state: touch
+        owner: "1883"
+        group: "1883"
+        mode: '0700'
+        modification_time: preserve
+        access_time: preserve
 
     # ─────────────────────────────────────────────────────────────
     # FASE 3: Subir Certificados PKI
@@ -132,13 +143,7 @@
         mode: '0644'
       notify: Reiniciar stack SCADA
 
-    - name: "[MQTT] Crear archivo passwd vacío si no existe"
-      ansible.builtin.file:
-        path: "{{ scada_mosquitto_dir }}/config/passwd"
-        state: touch
-        mode: '0644'
-        modification_time: preserve
-        access_time: preserve
+
 
     # ─────────────────────────────────────────────────────────────
     # FASE 5: Empaquetado Limpio y Transferencia (Push → Tarball)
@@ -237,16 +242,17 @@
     - name: "[MQTT] Generar archivo passwd inicial con contenedor efímero"
       ansible.builtin.command:
         cmd: >
-          docker run --rm
+          docker run --rm --user root
           -v {{ scada_mosquitto_dir }}/config:/mosquitto/config
           eclipse-mosquitto:2
-          sh -c "mosquitto_passwd -b /mosquitto/config/passwd {{ mqtt_health_user | default(vault_mqtt_health_user) }} {{ vault_mqtt_health_pass }} && mosquitto_passwd -b /mosquitto/config/passwd {{ vault_mqtt_frontend_user | default(mqtt_frontend_user) }} {{ vault_mqtt_frontend_pass | default(mqtt_frontend_pass) }}"
-    - name: "[MQTT] Devolver permisos del archivo passwd al usuario Mosquitto (1883)"
+          sh -c "mosquitto_passwd -b /mosquitto/config/passwd '{{ mqtt_health_user }}' '{{ vault_mqtt_health_pass }}' && mosquitto_passwd -b /mosquitto/config/passwd '{{ mqtt_frontend_user }}' '{{ mqtt_frontend_pass }}'"
+
+    - name: "[MQTT] Re-aplicar permisos del archivo passwd (drift por contenedor root)"
       ansible.builtin.file:
         path: "{{ scada_mosquitto_dir }}/config/passwd"
         owner: "1883"
         group: "1883"
-        mode: '0644'
+        mode: '0700'
 
     # ─────────────────────────────────────────────────────────────
     # FASE 8: Renderizar Docker Compose y Desplegar
@@ -268,46 +274,6 @@
     - name: "[DEPLOY] Mostrar estado de los contenedores"
       ansible.builtin.debug:
         msg: "Docker Compose terminó con: {{ compose_result.actions | default('sin acciones') }}"
-
-    # ─────────────────────────────────────────────────────────────
-    # # FASE 9: Crear Usuario MQTT para el Frontend
-    # # ─────────────────────────────────────────────────────────────
-    # - name: "[MQTT] Esperar a que Mosquitto esté saludable"
-    #   ansible.builtin.command:
-    #     cmd: docker inspect --format='{{ '{{' }}.State.Health.Status{{ '}}' }}' scada_mosquitto
-    #   register: mosquitto_health
-    #   retries: 10
-    #   delay: 5
-    #   until: mosquitto_health.stdout == "healthy"
-    #   changed_when: false
-
-    # - name: "[MQTT] Crear/actualizar usuario healthcheck"
-    #   ansible.builtin.command:
-    #     cmd: >
-    #       docker exec scada_mosquitto
-    #       mosquitto_passwd -b /mosquitto/config/passwd
-    #       {{ mqtt_health_user }} {{ vault_mqtt_health_pass }}
-
-    # - name: "[MQTT] Crear/actualizar usuario del Frontend"
-    #   ansible.builtin.command:
-    #     cmd: >
-    #       docker exec scada_mosquitto
-    #       mosquitto_passwd -b /mosquitto/config/passwd
-    #       {{ mqtt_frontend_user }} {{ mqtt_frontend_pass }}
-
-    # - name: "[MQTT] Reiniciar Mosquitto para aplicar usuarios"
-    #   ansible.builtin.command:
-    #     cmd: docker restart scada_mosquitto
-
-    # - name: "[MQTT] Esperar a que Mosquitto vuelva a estar saludable"
-    #   ansible.builtin.command:
-    #     cmd: docker inspect --format='{{ '{{' }}.State.Health.Status{{ '}}' }}' scada_mosquitto
-    #   register: mosquitto_health_post
-    #   retries: 10
-    #   delay: 5
-    #   until: mosquitto_health_post.stdout == "healthy"
-    #   changed_when: false
-
     # ─────────────────────────────────────────────────────────────
     # FASE 10: Healthcheck Final
     # ─────────────────────────────────────────────────────────────
